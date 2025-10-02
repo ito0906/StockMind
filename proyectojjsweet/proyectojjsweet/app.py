@@ -1,13 +1,16 @@
-from flask import Flask, request, render_template, redirect, url_for, session, flash, jsonify
+from flask import Flask, request, render_template, redirect, url_for, session, flash, jsonify ,send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import date, datetime
 from functools import wraps
 import json
-
+from xhtml2pdf import pisa
+from io import BytesIO
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from .utils import enviar_factura_email
+
+
 
 from .config import conectar, desconectar
 
@@ -186,6 +189,10 @@ def buscar_cliente():
 
 
 
+from flask import send_file
+from xhtml2pdf import pisa
+from io import BytesIO
+
 @app.route("/proyectojjsweet/factura", methods=["POST"])
 @rol_requerido('dueño', 'administrador', 'empleado')
 def factura():
@@ -197,22 +204,19 @@ def factura():
     documento = request.form["documento"]
     telefono = request.form.get("telefono", "")
     correo = request.form.get("correo", "")
-
     direccion = request.form.get("direccion", "")
     fecha = datetime.now()
 
-    # Insertar cliente si no existe
+    # Insertar o actualizar cliente
     cur.execute("SELECT id_cli FROM cliente WHERE cli_documento = %s", (documento,))
     cliente_existente = cur.fetchone()
-
     if cliente_existente:
         id_cliente = cliente_existente[0]
         cur.execute("""
             UPDATE cliente
-            SET cli_telefono = %s, cli_direccion = %s, cli_correo = %s
-            WHERE id_cli = %s
+            SET cli_telefono=%s, cli_direccion=%s, cli_correo=%s
+            WHERE id_cli=%s
         """, (telefono, direccion, correo, id_cliente))
-
     else:
         cur.execute("""
             INSERT INTO cliente (cli_nombre, cli_documento, cli_telefono, cli_direccion, cli_correo, cli_estado)
@@ -220,27 +224,31 @@ def factura():
         """, (cliente, documento, telefono, direccion, correo))
         id_cliente = cur.fetchone()[0]
 
-
-    # Lista de productos
+    # Productos
     productos_json = request.form.get("productos_json")
     productos = json.loads(productos_json) if productos_json else []
-
     if not productos:
         flash("❌ No se enviaron productos en la factura", "error")
         return redirect(url_for("ventas"))
 
-    # Validar stock
+    total_venta = 0
+    detalles = []
+
+    # Crear la venta
+    cur.execute("""
+        INSERT INTO venta (ven_fecha, ven_condicion, ven_pago, ven_total, ven_estado, fk_id_cli)
+        VALUES (%s, %s, %s, %s, TRUE, %s)
+        RETURNING id_ven
+    """, (fecha, "contado", "efectivo", 0, id_cliente))
+    id_venta = cur.fetchone()[0]
+
+    # Detalles y stock
     for prod in productos:
         producto_id = int(prod["id"])
         cantidad = int(prod["cantidad"])
 
-        cur.execute("""
-            SELECT prod_nombre, prod_precio, prod_stock
-            FROM producto
-            WHERE id_prod = %s AND prod_estado = 'Activo'
-        """, (producto_id,))
+        cur.execute("SELECT prod_nombre, prod_precio, prod_stock FROM producto WHERE id_prod=%s AND prod_estado='Activo'", (producto_id,))
         producto_data = cur.fetchone()
-
         if not producto_data:
             flash(f"⚠️ El producto con ID {producto_id} no existe o está inactivo", "warning")
             conn.rollback()
@@ -249,35 +257,12 @@ def factura():
             return redirect(url_for("ventas"))
 
         nombre, precio_real, stock_disponible = producto_data
-
         if cantidad > stock_disponible:
             flash(f"⚠️ Stock insuficiente para {nombre}. Disponible: {stock_disponible}", "warning")
             conn.rollback()
             cur.close()
             conn.close()
             return redirect(url_for("ventas"))
-
-    # Crear la venta
-    total_venta = 0
-    detalles = []
-
-    cur.execute("""
-        INSERT INTO venta (ven_fecha, ven_condicion, ven_pago, ven_total, ven_estado, fk_id_cli)
-        VALUES (%s, %s, %s, %s, TRUE, %s)
-        RETURNING id_ven
-    """, (fecha, "contado", "efectivo", 0, id_cliente))
-    id_venta = cur.fetchone()[0]
-
-    for prod in productos:
-        producto_id = int(prod["id"])
-        cantidad = int(prod["cantidad"])
-
-        cur.execute("""
-            SELECT prod_nombre, prod_precio
-            FROM producto
-            WHERE id_prod = %s
-        """, (producto_id,))
-        nombre, precio_real = cur.fetchone()
 
         total = cantidad * float(precio_real)
         total_venta += total
@@ -287,11 +272,7 @@ def factura():
             VALUES (%s, %s, %s, %s, %s, TRUE)
         """, (id_venta, producto_id, precio_real, total, cantidad))
 
-        cur.execute("""
-            UPDATE producto
-            SET prod_stock = prod_stock - %s
-            WHERE id_prod = %s
-        """, (cantidad, producto_id))
+        cur.execute("UPDATE producto SET prod_stock = prod_stock - %s WHERE id_prod = %s", (cantidad, producto_id))
 
         detalles.append({
             "prod_nombre": nombre,
@@ -300,47 +281,39 @@ def factura():
             "dv_total": total
         })
 
+    # Actualizar total venta
     cur.execute("UPDATE venta SET ven_total = %s WHERE id_ven = %s", (total_venta, id_venta))
-
     conn.commit()
     cur.close()
     conn.close()
 
-    venta_dict = {
+    # Generar PDF en memoria
+    html = render_template("factura.html", venta={
         "id_ven": id_venta,
         "ven_fecha": fecha,
         "ven_condicion": "contado",
         "ven_pago": "efectivo",
         "ven_total": total_venta
-    }
+    }, detalles=detalles, cliente=cliente, documento=documento,
+       telefono=telefono, direccion=direccion, correo=correo, pdf=True)
 
-    # Generar PDF temporal
-    pdf_path = f"factura_{id_venta}.pdf"
-    from xhtml2pdf import pisa
-    html = render_template("factura.html", venta=venta_dict, detalles=detalles,
-                       cliente=cliente, documento=documento,
-                       telefono=telefono, direccion=direccion,
-                       correo=correo, pdf=True)
-    with open(pdf_path, "wb") as f:
-        pisa.CreatePDF(html, dest=f)
+    pdf_buffer = BytesIO()
+    pisa.CreatePDF(html, dest=pdf_buffer)
+    pdf_buffer.seek(0)
 
-# 🔹 Enviar correo
-    print(f"[DEBUG] Enviando factura a {correo}...")
-    enviar_factura_email(correo, cliente, pdf_path)
-    print("[DEBUG] Correo enviado ✅")
+    # Enviar correo
+    enviar_factura_email(correo, cliente, pdf_buffer)
 
+    # Renderizar la página normal de factura
+    return render_template("factura.html", venta={
+        "id_ven": id_venta,
+        "ven_fecha": fecha,
+        "ven_condicion": "contado",
+        "ven_pago": "efectivo",
+        "ven_total": total_venta
+    }, detalles=detalles, cliente=cliente, documento=documento,
+       telefono=telefono, direccion=direccion, correo=correo, pdf=False)
 
-    return render_template(
-        "factura.html",
-        venta=venta_dict,
-        detalles=detalles,
-        cliente=cliente,
-        documento=documento,
-        telefono=telefono,
-        direccion=direccion,
-        correo=correo,
-        pdf=False
-    )   
 
 
 @app.route("/proyectojjsweet/factura/pdf/<int:id_ven>")
