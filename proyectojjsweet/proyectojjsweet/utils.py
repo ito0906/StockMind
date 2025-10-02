@@ -19,7 +19,7 @@ def enviar_factura_email(correo_cliente, cliente_nombre, pdf_buffer):
     msg.attach(adj)
 
     # Enviar correo
-    with smtplib.SMTP('smtp.example.com', 587) as server:
+    with smtplib.SMTP('smtp.gmail.com', 587) as server:
         server.starttls()
-        server.login('tu_correo@example.com', 'tu_password')
+        server.login('alvaromanjarrez0906@gmail.com', 'tu_password')
         server.send_message(msg)
