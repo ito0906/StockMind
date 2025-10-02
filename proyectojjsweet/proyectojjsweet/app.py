@@ -3,7 +3,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import date, datetime
 from functools import wraps
 import json
-from xhtml2pdf import pisa
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 from io import BytesIO
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -287,25 +288,50 @@ def factura():
     cur.close()
     conn.close()
 
-# Generar PDF en memoria (optimizado)
-    html = render_template("factura.html", venta={
-        "id_ven": id_venta,
-        "ven_fecha": fecha,
-        "ven_condicion": "contado",
-        "ven_pago": "efectivo",
-        "ven_total": total_venta
-    },  detalles=detalles, cliente=cliente, documento=documento,
-        telefono=telefono, direccion=direccion, correo=correo, pdf=True)
+# Generar PDF en memoria con ReportLab
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    pdf.setFont("Helvetica", 12)
 
-    pdf_buffer = BytesIO()
-    pisa.CreatePDF(html, dest=pdf_buffer)
+# Encabezado
+    pdf.drawString(250, 750, "FACTURA")
+    pdf.drawString(50, 720, f"Cliente: {cliente}")
+    pdf.drawString(50, 705, f"Documento: {documento}")
+    pdf.drawString(50, 690, f"Teléfono: {telefono}")
+    pdf.drawString(50, 675, f"Correo: {correo}")
+    pdf.drawString(50, 660, f"Dirección: {direccion}")
+    pdf.drawString(50, 645, f"Fecha: {fecha.strftime('%d/%m/%Y %H:%M:%S')}")
 
-# Convertir a bytes y liberar buffer
-    pdf_bytes = pdf_buffer.getvalue()
-    pdf_buffer.close()
+# Tabla de productos
+    y = 620
+    pdf.drawString(50, y, "Producto")
+    pdf.drawString(200, y, "Cantidad")
+    pdf.drawString(300, y, "Precio Unitario")
+    pdf.drawString(430, y, "Total")
+    y -= 20
 
-# Enviar correo solo con los bytes
+    for d in detalles:
+        pdf.drawString(50, y, str(d["prod_nombre"]))
+        pdf.drawString(200, y, str(d["dv_cantidad"]))
+        pdf.drawString(300, y, f"${d['dv_precio_uni']:.2f}")
+        pdf.drawString(430, y, f"${d['dv_total']:.2f}")
+        y -= 20
+        if y < 100:  # salto de página si se acaba el espacio
+            pdf.showPage()
+            pdf.setFont("Helvetica", 12)
+            y = 750
+
+# Total
+    pdf.drawString(50, y - 20, f"TOTAL: ${total_venta:.2f}")
+
+    pdf.save()
+    buffer.seek(0)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+
+# Enviar por correo
     enviar_factura_email(correo, cliente, pdf_bytes)
+
 
 
     # Renderizar la página normal de factura
