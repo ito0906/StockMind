@@ -1,1 +1,2 @@
-web: gunicorn app:app
+web: gunicorn proyectojjsweet.proyectojjsweet.app:app
+
