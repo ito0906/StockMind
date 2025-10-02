@@ -287,22 +287,26 @@ def factura():
     cur.close()
     conn.close()
 
-    # Generar PDF en memoria
+# Generar PDF en memoria (optimizado)
     html = render_template("factura.html", venta={
         "id_ven": id_venta,
         "ven_fecha": fecha,
         "ven_condicion": "contado",
         "ven_pago": "efectivo",
         "ven_total": total_venta
-    }, detalles=detalles, cliente=cliente, documento=documento,
-       telefono=telefono, direccion=direccion, correo=correo, pdf=True)
+    },  detalles=detalles, cliente=cliente, documento=documento,
+        telefono=telefono, direccion=direccion, correo=correo, pdf=True)
 
     pdf_buffer = BytesIO()
     pisa.CreatePDF(html, dest=pdf_buffer)
-    pdf_buffer.seek(0)
 
-    # Enviar correo
-    enviar_factura_email(correo, cliente, pdf_buffer)
+# Convertir a bytes y liberar buffer
+    pdf_bytes = pdf_buffer.getvalue()
+    pdf_buffer.close()
+
+# Enviar correo solo con los bytes
+    enviar_factura_email(correo, cliente, pdf_bytes)
+
 
     # Renderizar la página normal de factura
     return render_template("factura.html", venta={
