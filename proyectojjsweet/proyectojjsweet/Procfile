@@ -1,2 +1,2 @@
-web: gunicorn proyectojjsweet.proyectojjsweet.app:app --timeout 120
+web: gunicorn proyectojjsweet.proyectojjsweet.app:app
 
