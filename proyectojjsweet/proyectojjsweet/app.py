@@ -7,9 +7,9 @@ import json
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from utils import enviar_factura_email
+from .utils import enviar_factura_email
 
-from config import conectar, desconectar
+from .config import conectar, desconectar
 
 
 app = Flask(__name__)
